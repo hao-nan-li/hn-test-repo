@@ -1,50 +1,50 @@
 # Google ADK Stock Market Agent
 
-An AI Agent created with **Google ADK (Agent Development Kit)** in Python to find and rank the top 10 most active trading stocks today based on total dollar trading volume (**Volume × Current Price**).
+An AI Agent created using [google/adk-python](https://github.com/google/adk-python) to find and rank the top 10 most active trading stocks today based on total dollar trading volume (**Volume × Current Price**).
 
 ---
 
-## 🌟 Key Features
+## 🌟 Key ADK Python Architectural Components
 
-1. **Google ADK Integration**: Built using `google-adk` (`google.adk.Agent`, `google.adk.Runner`, `google.adk.sessions.InMemorySessionService`).
-2. **Tool-Driven Analysis**: Equipped with specialized Python tools to fetch stock market data, perform exact volume × price calculations, and sort stock rankings.
-3. **Structured Outputs**: Formats stock market activity into clean markdown tables with dollar volume figures (e.g. `$33.00 Billion`).
-4. **Flexible LLM Execution**: Supports both standard Gemini models (`gemini-2.5-flash`) when an API key is available, as well as an offline fallback model (`ADKStockLlm`) for keyless/offline testing environments.
+Following the patterns in [google/adk-python](https://github.com/google/adk-python):
+
+1. **`google.adk.Agent`**: Defines root agent (`TopActiveStocksAgent`) with instructions, tools, description, and model configuration.
+2. **`google.adk.apps.App`**: Wraps the root agent into an ADK Application (`stock_app`).
+3. **`google.adk.Runner`**: Orchestrates event-driven execution using `run_async(...)`.
+4. **`google.adk.sessions.InMemorySessionService`**: Manages user state and message histories.
+5. **ADK Tools**: Decorator-free Python functions with typed signatures and Google-style docstrings automatically declared as ADK tools:
+   - `get_stock_market_data()`
+   - `calculate_active_trading_stocks(top_n=10)`
+   - `get_top_10_active_stocks()`
+   - `get_stock_details(ticker)`
 
 ---
 
 ## 📊 Methodology & Calculations
 
-Stock market trading activity is calculated using:
-
 $$\text{Dollar Volume} = \text{Trading Volume (shares)} \times \text{Current Price (\$)}$$
 
-The agent sorts all stocks in descending order by $\text{Dollar Volume}$ and extracts the top 10 entries.
+The agent calculates $\text{Dollar Volume}$ for all stocks, sorts them in descending order, and extracts the top 10.
 
 ---
 
-## 🚀 Getting Started
-
-### Prerequisites
-
-- Python 3.10+
-- `google-adk` package installed (`pip install google-adk`)
+## 🚀 Usage
 
 ### Running the Agent
 
-Run the default query via CLI:
+Default query:
 
 ```bash
 python3 stock_agent.py
 ```
 
-Run with a custom query:
+Custom query:
 
 ```bash
-python3 stock_agent.py --query "List the top 10 most active trading stocks today"
+python3 stock_agent.py --query "Find top active stocks"
 ```
 
-Run in interactive CLI mode:
+Interactive mode:
 
 ```bash
 python3 stock_agent.py --interactive
@@ -52,9 +52,9 @@ python3 stock_agent.py --interactive
 
 ---
 
-## 🧪 Running Unit & Integration Tests
+## 🧪 Testing
 
-Run the full test suite using Python's `unittest`:
+Run unit & integration tests:
 
 ```bash
 python3 -m unittest test_stock_agent.py
@@ -64,6 +64,6 @@ python3 -m unittest test_stock_agent.py
 
 ## 📁 File Structure
 
-- [stock_agent.py](file:///Users/haonan/Documents/hn-test-repo/stock_agent.py): Main agent implementation containing fake data generator, tools, custom LLM fallback, ADK Agent, Runner, and CLI entry point.
-- [test_stock_agent.py](file:///Users/haonan/Documents/hn-test-repo/test_stock_agent.py): Comprehensive test suite verifying tool logic, volume * price calculations, ranking order, and ADK agent runner execution.
-- [README.md](file:///Users/haonan/Documents/hn-test-repo/README.md): Project overview and usage documentation.
+- [stock_agent.py](file:///Users/haonan/Documents/hn-test-repo/stock_agent.py): Full agent implementation referencing `google/adk-python`.
+- [test_stock_agent.py](file:///Users/haonan/Documents/hn-test-repo/test_stock_agent.py): Unittest suite for tools, calculations, ADK App, and Runner.
+- [README.md](file:///Users/haonan/Documents/hn-test-repo/README.md): Documentation.

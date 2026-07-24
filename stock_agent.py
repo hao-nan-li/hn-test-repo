@@ -1,9 +1,10 @@
 """
 Stock Market Analysis Agent using Google ADK (Agent Development Kit).
+Repository Reference: https://github.com/google/adk-python
 
-This module defines an ADK agent that retrieves stock trading data (mock/fake data for testing),
+This module implements an ADK agent that retrieves stock trading data (using fake data for testing),
 calculates dollar volume (volume * current_price), sorts stocks by dollar volume, and returns
-the top 10 most active trading stocks.
+the top 10 most active trading stocks today.
 """
 
 import os
@@ -13,12 +14,13 @@ import argparse
 from typing import List, Dict, Any, Optional
 
 from google.adk import Agent, Runner
+from google.adk.apps import App
 from google.adk.sessions import InMemorySessionService
 from google.adk.models import BaseLlm, LlmRequest, LlmResponse
 from google.genai import types
 
 # ---------------------------------------------------------------------------
-# 1. Fake Stock Market Data Generator
+# 1. Fake Stock Market Data Dataset
 # ---------------------------------------------------------------------------
 
 DEFAULT_FAKE_STOCKS: List[Dict[str, Any]] = [
@@ -49,7 +51,7 @@ DEFAULT_FAKE_STOCKS: List[Dict[str, Any]] = [
 
 
 def format_dollar_amount(amount: float) -> str:
-    """Format dollar amount into human-readable representation."""
+    """Format dollar amount into a human-readable string representation."""
     if amount >= 1_000_000_000:
         return f"${amount / 1_000_000_000:.2f} Billion"
     if amount >= 1_000_000:
@@ -62,10 +64,10 @@ def format_dollar_amount(amount: float) -> str:
 # ---------------------------------------------------------------------------
 
 def get_stock_market_data() -> List[Dict[str, Any]]:
-    """Retrieves raw stock trading data including ticker, company name, volume, and current price.
+    """Retrieves the full list of stock market trading data.
 
     Returns:
-        List[Dict[str, Any]]: A list of dictionaries containing stock market data.
+        List[Dict[str, Any]]: List of stock entries with ticker, company name, volume, and price.
     """
     return DEFAULT_FAKE_STOCKS
 
@@ -74,7 +76,7 @@ def calculate_active_trading_stocks(top_n: int = 10) -> List[Dict[str, Any]]:
     """Calculates active trading stocks sorted by total dollar volume (volume * current_price).
 
     Args:
-        top_n (int): Number of top active stocks to return (default is 10).
+        top_n (int): Number of top active stocks to return (default: 10).
 
     Returns:
         List[Dict[str, Any]]: Top N active stocks with rank, volume, price, and calculated dollar volume.
@@ -95,10 +97,9 @@ def calculate_active_trading_stocks(top_n: int = 10) -> List[Dict[str, Any]]:
             "formatted_total_value": format_dollar_amount(volume_times_price)
         })
 
-    # Sort in descending order by volume * current_price
+    # Sort descending by volume * current_price
     sorted_stocks = sorted(processed_stocks, key=lambda x: x["volume_times_price"], reverse=True)
 
-    # Assign rankings
     top_stocks = sorted_stocks[:top_n]
     for idx, item in enumerate(top_stocks, start=1):
         item["rank"] = idx
@@ -107,10 +108,10 @@ def calculate_active_trading_stocks(top_n: int = 10) -> List[Dict[str, Any]]:
 
 
 def get_top_10_active_stocks() -> Dict[str, Any]:
-    """Finds and returns the top 10 most active trading stocks sorted by volume times current price today.
+    """Finds and returns the top 10 most active trading stocks sorted by volume * current_price.
 
     Returns:
-        Dict[str, Any]: Summary dictionary containing ranking, metrics, and stock entries.
+        Dict[str, Any]: Structured summary dictionary containing total dollar volume and stock rankings.
     """
     top_stocks = calculate_active_trading_stocks(top_n=10)
     total_dollar_volume_top_10 = sum(s["volume_times_price"] for s in top_stocks)
@@ -123,19 +124,39 @@ def get_top_10_active_stocks() -> Dict[str, Any]:
     }
 
 
+def get_stock_details(ticker: str) -> Dict[str, Any]:
+    """Retrieves specific trading volume and price details for a single stock ticker.
+
+    Args:
+        ticker (str): The stock symbol (e.g., 'NVDA', 'AAPL').
+
+    Returns:
+        Dict[str, Any]: Detailed trading metrics for the requested stock.
+    """
+    ticker_upper = ticker.strip().upper()
+    for stock in DEFAULT_FAKE_STOCKS:
+        if stock["ticker"] == ticker_upper:
+            vol_times_price = stock["volume"] * stock["current_price"]
+            return {
+                "ticker": stock["ticker"],
+                "company_name": stock["company_name"],
+                "volume": stock["volume"],
+                "current_price": stock["current_price"],
+                "volume_times_price": vol_times_price,
+                "formatted_total_value": format_dollar_amount(vol_times_price)
+            }
+    return {"error": f"Stock ticker '{ticker}' not found."}
+
+
 # ---------------------------------------------------------------------------
-# 3. Fallback / Mock LLM Implementation for Offline or Keyless Environments
+# 3. ADK Custom BaseLlm Fallback (for Keyless / Offline Testing)
 # ---------------------------------------------------------------------------
 
 class ADKStockLlm(BaseLlm):
-    """Custom ADK BaseLlm subclass that executes tool workflow deterministically
-
-    when running without a live Gemini API key connection.
-    """
+    """Custom ADK BaseLlm subclass adhering to adk-python LlmRequest/LlmResponse specifications."""
     model: str = "adk-stock-llm"
 
     async def generate_content_async(self, llm_request: LlmRequest, stream: bool = False):
-        # Inspect incoming request contents for function response from ADK runner
         tool_result = None
 
         if llm_request.contents:
@@ -150,14 +171,13 @@ class ADKStockLlm(BaseLlm):
                                 tool_result = response_dict
 
         if tool_result is None:
-            # First turn: Request tool call to get top 10 active stocks
+            # Request tool call to get top 10 active stocks
             call_content = types.Content(
                 role="model",
                 parts=[types.Part.from_function_call(name="get_top_10_active_stocks", args={})]
             )
             yield LlmResponse(content=call_content, partial=False)
         else:
-            # Second turn: Format and return final answer based on tool output
             if isinstance(tool_result, dict) and "top_stocks" in tool_result:
                 top_stocks = tool_result["top_stocks"]
                 total_val = tool_result.get("total_top_10_dollar_volume", "N/A")
@@ -196,69 +216,87 @@ class ADKStockLlm(BaseLlm):
 
 
 # ---------------------------------------------------------------------------
-# 4. Create and Configure Agent
+# 4. ADK Agent & App Factory
 # ---------------------------------------------------------------------------
 
 def create_stock_agent(model_name: str = "gemini-2.5-flash") -> Agent:
-    """Factory function to build and configure the Stock ADK Agent.
+    """Factory function to build the TopActiveStocksAgent using google.adk.Agent.
 
     Args:
-        model_name (str): Model name or standard ADK model identifier.
+        model_name (str): Gemini model identifier or custom model backend.
 
     Returns:
-        Agent: An initialized google-adk Agent instance.
+        Agent: Configured ADK Agent instance.
     """
     has_api_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-
-    if has_api_key:
-        llm_backend = model_name
-    else:
-        llm_backend = ADKStockLlm()
+    llm_backend = model_name if has_api_key else ADKStockLlm()
 
     instruction_prompt = (
-        "You are a professional financial stock market analysis agent created with Google ADK.\n"
-        "Your task is to identify the top 10 most active trading stocks today sorted by total dollar volume "
-        "(Volume times Current Price).\n"
-        "Use the provided tools `get_top_10_active_stocks` or `calculate_active_trading_stocks` to retrieve data.\n"
-        "Present the final results as a clean, beautifully formatted markdown table including Rank, Ticker, "
-        "Company Name, Volume, Price, and Total Dollar Volume."
+        "You are a professional financial analysis agent built with Google ADK (adk-python).\n"
+        "Your goal is to find the top 10 most active trading stocks today, sorted by Volume * Current Price.\n"
+        "Use tools like `get_top_10_active_stocks`, `calculate_active_trading_stocks`, or `get_stock_details`.\n"
+        "Present the final response in a clean markdown table showing Rank, Ticker, Company Name, Volume, Price, and Total Dollar Volume."
     )
 
     agent = Agent(
         name="TopActiveStocksAgent",
         model=llm_backend,
-        description="ADK Agent that finds the top 10 most active stocks today sorted by volume * current price.",
+        description="Google ADK Agent for identifying top 10 active trading stocks by volume * price.",
         instruction=instruction_prompt,
-        tools=[get_stock_market_data, calculate_active_trading_stocks, get_top_10_active_stocks],
+        tools=[
+            get_stock_market_data,
+            calculate_active_trading_stocks,
+            get_top_10_active_stocks,
+            get_stock_details
+        ],
         sub_agents=[]
     )
 
     return agent
 
 
-# ---------------------------------------------------------------------------
-# 5. Agent Execution Runner
-# ---------------------------------------------------------------------------
-
-async def run_stock_agent_async(query: str, app_name: str = "stock_app", user_id: str = "user_1", session_id: str = "session_1") -> str:
-    """Runs the Stock ADK Agent asynchronously with the given query.
+def create_stock_app(app_name: str = "stock_app") -> App:
+    """Factory function to build the ADK App enclosing the root stock agent.
 
     Args:
-        query (str): The prompt/query for the agent.
         app_name (str): ADK application identifier.
-        user_id (str): User identifier for session.
-        session_id (str): Session identifier.
 
     Returns:
-        str: Final text output from the agent.
+        App: Configured google.adk.apps.App instance.
     """
     agent = create_stock_agent()
+    return App(name=app_name, root_agent=agent)
+
+
+# ---------------------------------------------------------------------------
+# 5. ADK Runner Execution
+# ---------------------------------------------------------------------------
+
+async def run_stock_agent_async(
+    query: str,
+    app_name: str = "stock_app",
+    user_id: str = "user_1",
+    session_id: str = "session_1"
+) -> str:
+    """Runs the Stock ADK App & Agent asynchronously via ADK Runner.
+
+    Args:
+        query (str): Input prompt for the agent.
+        app_name (str): Application identifier.
+        user_id (str): Session user ID.
+        session_id (str): Session ID.
+
+    Returns:
+        str: Final text response generated by the agent.
+    """
+    app = create_stock_app(app_name=app_name)
     session_service = InMemorySessionService()
 
-    # Ensure session exists
+    # Create session using adk-python InMemorySessionService
     session_service.create_session_sync(app_name=app_name, user_id=user_id, session_id=session_id)
 
-    runner = Runner(app_name=app_name, agent=agent, session_service=session_service)
+    # Initialize ADK Runner with App and SessionService
+    runner = Runner(app=app, session_service=session_service)
 
     user_message = types.Content(
         role="user",
@@ -277,14 +315,7 @@ async def run_stock_agent_async(query: str, app_name: str = "stock_app", user_id
 
 
 def run_stock_agent(query: str) -> str:
-    """Synchronous wrapper for running the Stock ADK Agent.
-
-    Args:
-        query (str): User prompt for the stock agent.
-
-    Returns:
-        str: Agent response text.
-    """
+    """Synchronous execution wrapper for running the Stock ADK Agent."""
     return asyncio.run(run_stock_agent_async(query))
 
 
@@ -294,24 +325,25 @@ def run_stock_agent(query: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Google ADK Stock Market Agent - Find Top 10 Active Stocks by Volume * Price"
+        description="Google ADK Python Stock Market Agent (https://github.com/google/adk-python)"
     )
     parser.add_argument(
         "--query", "-q",
         type=str,
         default="Find the top 10 most active trading stocks today, sorted by volume times current price.",
-        help="Query for the stock analysis agent."
+        help="Query string for the stock agent."
     )
     parser.add_argument(
         "--interactive", "-i",
         action="store_true",
-        help="Run in interactive CLI mode."
+        help="Run interactive CLI mode."
     )
 
     args = parser.parse_args()
 
     if args.interactive:
-        print("=== Google ADK Stock Market Agent (Interactive Mode) ===")
+        print("=== Google ADK Python Stock Agent (Interactive Mode) ===")
+        print("Reference: https://github.com/google/adk-python")
         print("Type 'exit' or 'quit' to stop.\n")
         while True:
             try:
@@ -320,7 +352,7 @@ def main():
                     break
                 if not user_input.strip():
                     continue
-                print("\n[Agent is processing...]")
+                print("\n[ADK Agent processing...]")
                 output = run_stock_agent(user_input)
                 print(f"\nAgent >\n{output}\n")
             except (KeyboardInterrupt, EOFError):
