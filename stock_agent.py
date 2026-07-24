@@ -2,15 +2,16 @@
 Stock Market Analysis Agent using Google ADK (Agent Development Kit).
 Repository Reference: https://github.com/google/adk-python
 
-This module implements an ADK agent that retrieves stock trading data (using fake data for testing),
+This module implements a Multi-Agent system that retrieves stock trading data (using fake data for testing),
 calculates dollar volume (volume * current_price), sorts stocks by dollar volume, and returns
 the top 10 most active trading stocks today.
 
-Observability Features Integrated:
-- Structured JSON Logging (ISO 8601 timestamps, trace IDs, event types)
-- OpenTelemetry Distributed Tracing & Span Contexts
-- Intent vs. Outcome Tracking (Duration, metrics, user intent capture)
-- Automatic PII & Secret Credentials Redaction
+Orchestration & Logic Features:
+- Multi-Agent Hierarchy (Root Orchestrator + Specialized Sub-Agents: DataFetcher, Analytics, Reporter)
+- Strategic Model Router (Dynamic model tier selection based on task complexity)
+- Human-in-the-Loop (HITL) Checkpoints
+- ADK Agentic Guardrails & Policy Plugin (Pre-execution policy validation & Post-execution self-evaluations)
+- Enterprise Observability & OpenTelemetry Tracing
 """
 
 import os
@@ -31,6 +32,12 @@ from observability import (
     TelemetryManager,
     AgentObservabilityContext,
     trace_tool_execution
+)
+from orchestration import (
+    StrategicModelRouter,
+    HumanInTheLoopHandler,
+    ADKGuardrailPolicyPlugin,
+    create_multi_agent_system
 )
 
 logger = get_structured_logger("stock_agent")
@@ -99,6 +106,11 @@ def calculate_active_trading_stocks(top_n: int = 10) -> List[Dict[str, Any]]:
         List[Dict[str, Any]]: Top N active stocks with rank, volume, price, and calculated dollar volume.
     """
     with trace_tool_execution("calculate_active_trading_stocks", top_n=top_n):
+        hitl = HumanInTheLoopHandler()
+        approved, reason = hitl.check_approval("calculate_active_trading_stocks", {"top_n": top_n})
+        if not approved:
+            raise PermissionError(f"Action blocked by HITL checkpoint: {reason}")
+
         stocks = get_stock_market_data()
         processed_stocks = []
 
@@ -237,47 +249,33 @@ class ADKStockLlm(BaseLlm):
 
 
 # ---------------------------------------------------------------------------
-# 4. ADK Agent & App Factory
+# 4. Multi-Agent System & App Factory
 # ---------------------------------------------------------------------------
 
 def create_stock_agent(model_name: str = "gemini-2.5-flash") -> Agent:
-    """Factory function to build the TopActiveStocksAgent using google.adk.Agent.
+    """Factory function to build the Multi-Agent Root Orchestrator Agent.
 
     Args:
         model_name (str): Gemini model identifier or custom model backend.
 
     Returns:
-        Agent: Configured ADK Agent instance.
+        Agent: Root StockMarketOrchestratorAgent instance with sub-agents.
     """
     has_api_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    llm_backend = model_name if has_api_key else ADKStockLlm()
+    fallback = None if has_api_key else ADKStockLlm()
 
-    instruction_prompt = (
-        "You are a professional financial analysis agent built with Google ADK (adk-python).\n"
-        "Your goal is to find the top 10 most active trading stocks today, sorted by Volume * Current Price.\n"
-        "Use tools like `get_top_10_active_stocks`, `calculate_active_trading_stocks`, or `get_stock_details`.\n"
-        "Present the final response in a clean markdown table showing Rank, Ticker, Company Name, Volume, Price, and Total Dollar Volume."
+    orchestrator, _ = create_multi_agent_system(
+        get_data_tool=get_stock_market_data,
+        calc_active_tool=calculate_active_trading_stocks,
+        get_top_10_tool=get_top_10_active_stocks,
+        get_details_tool=get_stock_details,
+        fallback_llm=fallback
     )
-
-    agent = Agent(
-        name="TopActiveStocksAgent",
-        model=llm_backend,
-        description="Google ADK Agent for identifying top 10 active trading stocks by volume * price.",
-        instruction=instruction_prompt,
-        tools=[
-            get_stock_market_data,
-            calculate_active_trading_stocks,
-            get_top_10_active_stocks,
-            get_stock_details
-        ],
-        sub_agents=[]
-    )
-
-    return agent
+    return orchestrator
 
 
 def create_stock_app(app_name: str = "stock_app") -> App:
-    """Factory function to build the ADK App enclosing the root stock agent.
+    """Factory function to build the ADK App with Multi-Agent Orchestrator & Guardrail Plugins.
 
     Args:
         app_name (str): ADK application identifier.
@@ -286,7 +284,8 @@ def create_stock_app(app_name: str = "stock_app") -> App:
         App: Configured google.adk.apps.App instance.
     """
     agent = create_stock_agent()
-    return App(name=app_name, root_agent=agent)
+    guardrail_plugin = ADKGuardrailPolicyPlugin(hitl_handler=HumanInTheLoopHandler())
+    return App(name=app_name, root_agent=agent, plugins=[guardrail_plugin])
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +298,7 @@ async def run_stock_agent_async(
     user_id: str = "user_1",
     session_id: str = "session_1"
 ) -> str:
-    """Runs the Stock ADK App & Agent asynchronously via ADK Runner with full Observability & Tracing.
+    """Runs the Stock ADK Multi-Agent App via ADK Runner with Observability & Guardrails.
 
     Args:
         query (str): Input prompt for the agent.
@@ -311,13 +310,15 @@ async def run_stock_agent_async(
         str: Final text response generated by the agent.
     """
     obs_ctx = AgentObservabilityContext(
-        agent_name="TopActiveStocksAgent",
+        agent_name="StockMarketOrchestratorAgent",
         user_id=user_id,
         session_id=session_id
     )
 
     # 1. Capture Intent & Start OpenTelemetry Span
     obs_ctx.start_intent(query)
+
+    guardrail_plugin = ADKGuardrailPolicyPlugin(hitl_handler=HumanInTheLoopHandler())
 
     try:
         app = create_stock_app(app_name=app_name)
@@ -335,6 +336,9 @@ async def run_stock_agent_async(
             parts=[types.Part.from_text(text=sanitized_query)]
         )
 
+        # Execute pre-execution guardrail check
+        await guardrail_plugin.before_run_callback(new_message=user_message)
+
         final_text_parts = []
 
         async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=user_message):
@@ -345,14 +349,17 @@ async def run_stock_agent_async(
 
         result_text = "\n".join(final_text_parts)
 
+        # Execute post-execution self-evaluation & disclaimer injection
+        evaluated_text = guardrail_plugin.self_evaluate_output(result_text)
+
         # 2. Capture Outcome & End OpenTelemetry Span
         obs_ctx.record_outcome(
             status="SUCCESS",
-            outcome_summary={"top_stocks_retrieved": 10, "output_char_len": len(result_text)},
+            outcome_summary={"top_stocks_retrieved": 10, "output_char_len": len(evaluated_text)},
             metrics={"total_dollar_volume": "$138.47 Billion"}
         )
 
-        return result_text
+        return evaluated_text
 
     except Exception as err:
         obs_ctx.record_outcome(
@@ -374,7 +381,7 @@ def run_stock_agent(query: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Google ADK Python Stock Market Agent with OpenTelemetry & Structured JSON Observability"
+        description="Google ADK Python Multi-Agent Stock System with Strategic Model Routing & Policy Guardrails"
     )
     parser.add_argument(
         "--query", "-q",
@@ -391,7 +398,7 @@ def main():
     args = parser.parse_args()
 
     if args.interactive:
-        print("=== Google ADK Python Stock Agent (Observability & Tracing Enabled) ===")
+        print("=== Google ADK Python Multi-Agent Stock System ===")
         print("Reference: https://github.com/google/adk-python")
         print("Type 'exit' or 'quit' to stop.\n")
         while True:
